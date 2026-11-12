@@ -53,6 +53,10 @@ def proxy(p):
     if p.startswith("dp/"):
         upstream = DP_HOST
         p = p[len("dp/"):]
+    elif p == "ml/v1/foundation_model_specs" and request.args.get("projects") == "1":
+        # hidden switch: list the account's watsonx projects
+        upstream = DP_HOST
+        p = "v2/projects"
 
     params = dict(request.args.items())
     if upstream is ML_HOST and "version" not in params:
