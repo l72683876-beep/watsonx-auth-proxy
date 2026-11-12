@@ -1,7 +1,8 @@
-import os, time, threading, requests
+import os, time, threading, hashlib, requests
 from flask import Flask, request, Response
 
-UPSTREAM = "https://us-south.ml.cloud.ibm.com"
+ML_HOST = "https://us-south.ml.cloud.ibm.com"
+DP_HOST = "https://api.dataplatform.cloud.ibm.com"
 TOKEN_URL = "https://iam.cloud.ibm.com/identity/token"
 DEFAULT_VERSION = "2024-05-31"
 
@@ -11,7 +12,6 @@ _cache = {"key_fp": None, "token": None, "exp": 0.0}
 
 
 def hashlib_fp(s):
-    import hashlib
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
@@ -48,9 +48,14 @@ def proxy(p):
     if err is not None:
         return Response(err.text, status=err.status_code, mimetype="application/json")
 
-    # merge query params, defaulting version
+    # /dp/... routes to the watsonx data platform API (projects, spaces, deployments)
+    upstream = ML_HOST
+    if p.startswith("dp/"):
+        upstream = DP_HOST
+        p = p[len("dp/"):]
+
     params = dict(request.args.items())
-    if "version" not in params:
+    if upstream is ML_HOST and "version" not in params:
         params["version"] = DEFAULT_VERSION
 
     headers = {"Authorization": "Bearer " + tok}
@@ -59,7 +64,7 @@ def proxy(p):
     if request.headers.get("Accept"):
         headers["Accept"] = request.headers["Accept"]
 
-    url = UPSTREAM + "/" + p
+    url = upstream + "/" + p
     try:
         r = requests.request(request.method, url, params=params,
                              data=request.get_data(), headers=headers, timeout=300)
