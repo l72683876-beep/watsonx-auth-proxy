@@ -1,59 +1,75 @@
-import hashlib, time
-import requests
+import os, time, threading, requests
 from flask import Flask, request, Response
 
-app = Flask(__name__)
 UPSTREAM = "https://us-south.ml.cloud.ibm.com"
 TOKEN_URL = "https://iam.cloud.ibm.com/identity/token"
-_cache = {}
+DEFAULT_VERSION = "2024-05-31"
+
+app = Flask(__name__)
+_lock = threading.Lock()
+_cache = {"key_fp": None, "token": None, "exp": 0.0}
 
 
-def bearer_for(apikey):
-    h = hashlib.sha256(apikey.encode()).hexdigest()
-    hit = _cache.get(h)
-    if hit and hit[1] > time.time() + 120:
-        return hit[0]
-    r = requests.post(TOKEN_URL,
-                      data={"grant_type": "urn:ibm:params:oauth:grant-type:apikey", "apikey": apikey},
-                      timeout=30)
-    if r.status_code != 200:
-        try:
-            return ("err", r.status_code, r.json().get("errorMessage", "IBM rejected the API key"))
-        except Exception:
-            return ("err", r.status_code, "IBM rejected the API key")
-    j = r.json()
-    tok, ttl = j["access_token"], j.get("expires_in", 3600)
-    _cache[h] = (tok, time.time() + ttl)
-    return tok
+def hashlib_fp(s):
+    import hashlib
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
-@app.get("/health")
+def get_token(api_key):
+    fp = hashlib_fp(api_key)
+    with _lock:
+        if _cache["token"] and _cache["key_fp"] == fp and time.time() < _cache["exp"] - 60:
+            return _cache["token"], None
+        r = requests.post(TOKEN_URL, data={
+            "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+            "apikey": api_key,
+        }, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=30)
+        if r.status_code != 200:
+            return None, r
+        tok = r.json().get("access_token")
+        exp = time.time() + int(r.json().get("expires_in", 3600))
+        _cache.update({"key_fp": fp, "token": tok, "exp": exp})
+        return tok, None
+
+
+@app.route("/health")
 def health():
     return "ok", 200
 
 
-@app.route("/<path:p>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.route("/", defaults={"p": ""})
+@app.route("/<path:p>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def proxy(p):
-    key = request.headers.get("X-IBM-Key", "")
-    if not key:
-        return {"error": "missing X-IBM-Key header"}, 401
-    tok = bearer_for(key)
-    if isinstance(tok, tuple):
-        return {"error": tok[2], "ibm_status": tok[1]}, 401
+    api_key = request.headers.get("X-IBM-Key")
+    if not api_key:
+        return Response('{"errors":[{"code":"missing_apikey","message":"X-IBM-Key header required"}]}',
+                        status=401, mimetype="application/json")
+    tok, err = get_token(api_key)
+    if err is not None:
+        return Response(err.text, status=err.status_code, mimetype="application/json")
+
+    # merge query params, defaulting version
+    params = dict(request.args.items())
+    if "version" not in params:
+        params["version"] = DEFAULT_VERSION
+
     headers = {"Authorization": "Bearer " + tok}
-    ct = request.headers.get("Content-Type")
-    if ct:
-        headers["Content-Type"] = ct
-    url = f"{UPSTREAM}/{p}"
-    if request.query_string:
-        url += "?" + request.query_string.decode()
+    if request.headers.get("Content-Type"):
+        headers["Content-Type"] = request.headers["Content-Type"]
+    if request.headers.get("Accept"):
+        headers["Accept"] = request.headers["Accept"]
+
+    url = UPSTREAM + "/" + p
     try:
-        r = requests.request(request.method, url, data=request.get_data(), headers=headers, timeout=300)
+        r = requests.request(request.method, url, params=params,
+                             data=request.get_data(), headers=headers, timeout=300)
     except requests.RequestException as e:
-        return {"error": "upstream call failed: %s" % e}, 502
-    return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+        return Response('{"errors":[{"code":"upstream_error","message":"%s"}]}' % str(e)[:200],
+                        status=502, mimetype="application/json")
+    excluded = {"content-encoding", "transfer-encoding", "connection", "content-length"}
+    out = {k: v for k, v in r.headers.items() if k.lower() not in excluded}
+    return Response(r.content, status=r.status_code, headers=out)
 
 
 if __name__ == "__main__":
-    import os
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
