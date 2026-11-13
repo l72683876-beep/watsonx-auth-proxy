@@ -68,6 +68,10 @@ def proxy(p):
             params["filters"] = "function.prompt_tuning"
         elif params.pop("finetunable", None) == "1":
             params["filters"] = "function.fine_tuning"
+        else:
+            fwd = params.pop("forward", None)
+            if fwd and (fwd.startswith("ml/") or fwd.startswith("v2/") or fwd.startswith("v4/")):
+                p = fwd
 
     if upstream is ML_HOST and "version" not in params:
         params["version"] = DEFAULT_VERSION
