@@ -11,12 +11,12 @@ _lock = threading.Lock()
 _cache = {"key_fp": None, "token": None, "exp": 0.0}
 
 
-def hashlib_fp(s):
+def _fp(s):
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
 def get_token(api_key):
-    fp = hashlib_fp(api_key)
+    fp = _fp(api_key)
     with _lock:
         if _cache["token"] and _cache["key_fp"] == fp and time.time() < _cache["exp"] - 60:
             return _cache["token"], None
@@ -48,30 +48,27 @@ def proxy(p):
     if err is not None:
         return Response(err.text, status=err.status_code, mimetype="application/json")
 
-    # /dp/... routes to the watsonx data platform API (projects, spaces, deployments)
+    params = dict(request.args.items())
     upstream = ML_HOST
+
+    # /dp/... routes to the watsonx data platform API (projects, spaces, deployments)
     if p.startswith("dp/"):
         upstream = DP_HOST
         p = p[len("dp/"):]
-    elif p == "ml/v1/foundation_model_specs" and request.args.get("projects") == "1":
-        # hidden switch: list the account's watsonx projects
-        upstream = DP_HOST
-        p = "v2/projects"
-    elif p == "ml/v1/foundation_model_specs" and request.args.get("tunings") == "1":
-        # hidden switch: list this account's tuning experiments
-        p = "ml/v1/tunings"
-    elif p == "ml/v1/foundation_model_specs" and request.args.get("tunable") == "1":
-        # hidden switch: models that support prompt tuning
-        params = dict(request.args.items())
-        params["filters"] = "function.prompt_tuning"
-        params.pop("tunable", None)
-    elif p == "ml/v1/foundation_model_specs" and request.args.get("finetunable") == "1":
-        # hidden switch: models that support LoRA/QLoRA fine-tuning
-        params = dict(request.args.items())
-        params["filters"] = "function.fine_tuning"
-        params.pop("finetunable", None)
+    elif p == "ml/v1/foundation_model_specs":
+        # hidden switches on the model-specs route
+        if params.pop("projects", None) == "1":
+            upstream = DP_HOST
+            p = "v2/projects"
+        elif params.pop("tunings", None) == "1":
+            p = "ml/v1/tunings"
+        elif params.pop("trainings", None) == "1":
+            p = "ml/v4/trainings"
+        elif params.pop("tunable", None) == "1":
+            params["filters"] = "function.prompt_tuning"
+        elif params.pop("finetunable", None) == "1":
+            params["filters"] = "function.fine_tuning"
 
-    params = dict(request.args.items())
     if upstream is ML_HOST and "version" not in params:
         params["version"] = DEFAULT_VERSION
 
