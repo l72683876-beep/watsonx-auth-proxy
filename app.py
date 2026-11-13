@@ -57,6 +57,19 @@ def proxy(p):
         # hidden switch: list the account's watsonx projects
         upstream = DP_HOST
         p = "v2/projects"
+    elif p == "ml/v1/foundation_model_specs" and request.args.get("tunings") == "1":
+        # hidden switch: list this account's tuning experiments
+        p = "ml/v1/tunings"
+    elif p == "ml/v1/foundation_model_specs" and request.args.get("tunable") == "1":
+        # hidden switch: models that support prompt tuning
+        params = dict(request.args.items())
+        params["filters"] = "function.prompt_tuning"
+        params.pop("tunable", None)
+    elif p == "ml/v1/foundation_model_specs" and request.args.get("finetunable") == "1":
+        # hidden switch: models that support LoRA/QLoRA fine-tuning
+        params = dict(request.args.items())
+        params["filters"] = "function.fine_tuning"
+        params.pop("finetunable", None)
 
     params = dict(request.args.items())
     if upstream is ML_HOST and "version" not in params:
