@@ -73,6 +73,24 @@ def proxy(p):
             if fwd and (fwd.startswith("ml/") or fwd.startswith("v2/") or fwd.startswith("v4/")):
                 p = fwd
 
+    # fetch-from-url then PUT-as-file: used to load JSONL datasets from GitHub raw
+    # into a watsonx data asset attachment without streaming bytes through the caller
+    fetch_put = params.pop("fetch_put", None)
+    fetch_to = params.pop("fetch_to", None)
+    if fetch_put and fetch_to:
+        try:
+            src = requests.get(fetch_put, timeout=120)
+            up = fetch_to if fetch_to.startswith("http") else DP_HOST + fetch_to
+            h = {"Authorization": "Bearer " + tok, "Content-Type": "application/octet-stream"}
+            q = {k: v for k, v in params.items() if k in ("project_id",)}
+            r = requests.put(up, data=src.content, headers=h, params=q, timeout=300)
+        except requests.RequestException as e:
+            return Response('{"errors":[{"code":"fetch_put_error","message":"%s"}]}' % str(e)[:200],
+                            status=502, mimetype="application/json")
+        excluded = {"content-encoding", "transfer-encoding", "connection", "content-length"}
+        out = {k: v for k, v in r.headers.items() if k.lower() not in excluded}
+        return Response(r.content, status=r.status_code, headers=out)
+
     if upstream is ML_HOST and "version" not in params:
         params["version"] = DEFAULT_VERSION
 
