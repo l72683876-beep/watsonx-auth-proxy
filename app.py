@@ -1,4 +1,4 @@
-import os, time, threading, hashlib, requests
+import os, time, threading, hashlib, json, requests
 from flask import Flask, request, Response
 
 ML_HOST = "https://us-south.ml.cloud.ibm.com"
@@ -72,9 +72,11 @@ def proxy(p):
             fwd = params.pop("forward", None)
             if fwd and (fwd.startswith("ml/") or fwd.startswith("v2/") or fwd.startswith("v4/")):
                 p = fwd
+                if fwd.startswith("v2/"):
+                    upstream = DP_HOST
 
-    # fetch-from-url then PUT-as-file: used to load JSONL datasets from GitHub raw
-    # into a watsonx data asset attachment without streaming bytes through the caller
+    # fetch-from-url then PUT-as-file: loads JSONL from GitHub raw into a data asset
+    # attachment without streaming bytes through the caller
     fetch_put = params.pop("fetch_put", None)
     fetch_to = params.pop("fetch_to", None)
     if fetch_put and fetch_to:
@@ -91,19 +93,30 @@ def proxy(p):
         out = {k: v for k, v in r.headers.items() if k.lower() not in excluded}
         return Response(r.content, status=r.status_code, headers=out)
 
+    # POST triggered via GET with the JSON body in a query param: some clients cannot
+    # send raw POST through this relay, so the proxy issues the POST itself
+    post_body = params.pop("post_body", None)
+    method = request.method
+    data = request.get_data()
+    ctype = request.headers.get("Content-Type")
+    if post_body:
+        method = "POST"
+        data = post_body.encode()
+        ctype = "application/json"
+
     if upstream is ML_HOST and "version" not in params:
         params["version"] = DEFAULT_VERSION
 
     headers = {"Authorization": "Bearer " + tok}
-    if request.headers.get("Content-Type"):
-        headers["Content-Type"] = request.headers["Content-Type"]
+    if ctype:
+        headers["Content-Type"] = ctype
     if request.headers.get("Accept"):
         headers["Accept"] = request.headers["Accept"]
 
     url = upstream + "/" + p
     try:
-        r = requests.request(request.method, url, params=params,
-                             data=request.get_data(), headers=headers, timeout=300)
+        r = requests.request(method, url, params=params,
+                             data=data, headers=headers, timeout=300)
     except requests.RequestException as e:
         return Response('{"errors":[{"code":"upstream_error","message":"%s"}]}' % str(e)[:200],
                         status=502, mimetype="application/json")
